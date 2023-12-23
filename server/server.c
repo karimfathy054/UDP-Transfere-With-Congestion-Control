@@ -26,8 +26,12 @@ int cwnd = 1;
 int ssthresh = 8;
 int last_ack_no;
 int last_sent_seq;
-float plp = 0.1;
-int seed = 1;
+float plp = 0.01;
+int seed = 345;
+
+FILE *cwnd_file;
+
+
 typedef struct
 {
     uint16_t checksum;//TODO: checksum implementation
@@ -71,6 +75,9 @@ bool is_lost(){
 
 void send_pack(int socket_fd, packet *p, struct sockaddr_in client_addr) //TODO: probability to drop packet
 {
+    if (p->len == 0){
+        sendto(socket_fd, p, PACKET_SIZE, 0, (struct sockaddr *)&client_addr, sizeof(client_addr));
+    }
     if(is_lost()){
         printf("[+] packet %d is dropped\n",p->seq_no);
     }
@@ -84,8 +91,8 @@ int recv_ack(int socket_fd, ack_packet *ack, struct sockaddr_in client_addr)
     socklen_t addr_len = sizeof(client_addr);
     //TODO: reorganize the implementation to be a timer for each on the fly packet
     struct timeval timeout;
-    timeout.tv_sec = 0; //FIXME: return to 0 after finishing
-    timeout.tv_usec = 100000;//100 ms of wait
+    timeout.tv_sec = 1; //FIXME: return to 0 after finishing
+    timeout.tv_usec = 0;//100 ms of wait
     setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout));//if socket doesn't recieve a response in time val determined it returns -1 on recv
     return recvfrom(socket_fd, ack, ACK_SIZE, 0, (struct sockaddr *)&client_addr, &addr_len);
 }
@@ -107,13 +114,19 @@ int slow_start(int *ackd_packets, int total_packets, int socket_fd, struct socka
         // if timeout{ssthresh = cwnd/2; cwnd=1 ; dupAckCount=0; resend missing segment};
         if (timeout == -1)
         {
+            printf("[+] timeout on packet %d\n",last_ack_no+1);
             free(ack);
             ssthresh = cwnd / 2;
             cwnd = 1;
             dup_ack_count = 0;
             // send missing packet
+            printf("[+] resending packet %d on timeout\n",last_ack_no+1);
             last_sent_seq = last_ack_no + 1;
             send_pack(socket_fd, &all_packets[last_sent_seq], client_addr);
+            char string[10];
+            sprintf(string,"%d\n",cwnd);
+            fputs(string,cwnd_file);
+            packets_on_the_fly =1;
             continue;
         }
         int ack_no = ack->seq_no;
@@ -130,7 +143,12 @@ int slow_start(int *ackd_packets, int total_packets, int socket_fd, struct socka
             cwnd = ssthresh + 3; 
             // send missing packet
             last_sent_seq = last_ack_no + 1;
+            printf("[+] Resending missing packet %d on receiving triple duplicate ACK\n", last_sent_seq);
             send_pack(socket_fd, &all_packets[last_sent_seq], client_addr);
+            char string[10];
+            sprintf(string,"%d\n",cwnd);
+            fputs(string,cwnd_file);
+            packets_on_the_fly =1;
             return FAST_RECOVERY;
         }
         // if new ack {cwnd+=1 ;dup_ack =0 ;send new packet}
@@ -145,6 +163,9 @@ int slow_start(int *ackd_packets, int total_packets, int socket_fd, struct socka
             while(packets_on_the_fly<cwnd){
                 last_sent_seq++;
                 send_pack(socket_fd, &all_packets[last_sent_seq], client_addr);
+                char string[10];
+                sprintf(string,"%d\n",cwnd);
+                fputs(string,cwnd_file);
                 packets_on_the_fly++;
             }
         }
@@ -163,13 +184,19 @@ int congestion_avoidance(int *ackd_packets, int total_packets, int socket_fd, st
         // if timeout{ssthresh = cwnd/2; cwnd=1 ; dupAckCount=0; resend segment;return to slow start};
         if (timeout == -1)
         {
+            printf("[+] timeout on packet %d\n",last_ack_no+1);
             free(ack);
             ssthresh = cwnd / 2;
             cwnd = 1;
             dup_ack_count = 0;
             // send missing packet
             last_sent_seq = last_ack_no + 1;
+            printf("[+] resending packet %d on timeout\n",last_ack_no+1);
             send_pack(socket_fd, &all_packets[last_sent_seq], client_addr);
+            char string[10];
+            sprintf(string,"%d\n",cwnd);
+            fputs(string,cwnd_file);
+            packets_on_the_fly =1;
             return SLOW_START;
         }
         int ack_no = ack->seq_no;
@@ -185,14 +212,20 @@ int congestion_avoidance(int *ackd_packets, int total_packets, int socket_fd, st
             ssthresh = cwnd / 2;
             cwnd = ssthresh + 3; 
             // send missing packet
+            printf("[+] resending packet %d on receiving triple duplicate ACK\n",last_ack_no+1);
             last_sent_seq = last_ack_no + 1;
             send_pack(socket_fd, &all_packets[last_sent_seq], client_addr);
+            char string[10];
+            memset(string,0,10);
+            sprintf(string,"%d\n",cwnd);
+            fputs(string,cwnd_file);
+            packets_on_the_fly =1;
             return FAST_RECOVERY;
         }
         // if new Ack {cwnd = cwnd+((MSS^2)/cwnd); dupack=0;send next segment}
         if (ack_no > last_ack_no)
         {
-            cwnd = cwnd ;//+ 1 * (1 / cwnd); 
+            cwnd = cwnd + 1 * (1 / cwnd); 
             dup_ack_count = 0;
             *ackd_packets += ack_no - last_ack_no;
             packets_on_the_fly -= ack_no - last_ack_no;
@@ -201,6 +234,9 @@ int congestion_avoidance(int *ackd_packets, int total_packets, int socket_fd, st
             while(packets_on_the_fly<cwnd){
                 last_sent_seq++;
                 send_pack(socket_fd, &all_packets[last_sent_seq], client_addr);
+                char string[10];
+                sprintf(string,"%d\n",cwnd);
+                fputs(string,cwnd_file);
                 packets_on_the_fly++;
             }
         }
@@ -219,13 +255,19 @@ int fast_recovery(int *ackd_packets, int total_packets, int socket_fd, struct so
         // if timeout{ssthresh = cwnd/2; cwnd=1 ; dupAckCount=0; resend missing segment ; return to slow start};
         if (timeout == -1)
         {
+            printf("[+] timeout on packet %d\n",last_ack_no+1);
             free(ack);
             ssthresh = cwnd / 2;
             cwnd = 1;
             dup_ack_count = 0;
             // send missing packet
+            printf("[+] resending packet %d on timeout\n",last_ack_no+1);
             last_sent_seq = last_ack_no + 1;
             send_pack(socket_fd, &all_packets[last_sent_seq], client_addr);
+            char string[10];
+            sprintf(string,"%d\n",cwnd);
+            fputs(string,cwnd_file);
+            packets_on_the_fly =1;
             return SLOW_START;
         }
         int ack_no = ack->seq_no;
@@ -236,7 +278,11 @@ int fast_recovery(int *ackd_packets, int total_packets, int socket_fd, struct so
             cwnd = cwnd + 1;
             while(packets_on_the_fly<cwnd){
                 last_sent_seq++;
+                printf("[+] Sending next packet %d in fast recovery\n", last_sent_seq);
                 send_pack(socket_fd, &all_packets[last_sent_seq], client_addr);
+                char string[10];
+                sprintf(string,"%d\n",cwnd);
+                fputs(string,cwnd_file);
                 packets_on_the_fly++;
             }
         }
@@ -258,6 +304,10 @@ void udp_transfer(int total_packets, int socket_fd, struct sockaddr_in client_ad
     // enter one state
     // if state returns switch to next state
     send_pack(socket_fd, &all_packets[0], client_addr);
+    char string[10];
+    sprintf(string,"%d\n",cwnd);
+    fputs(string,cwnd_file);
+    packets_on_the_fly =1;
     int ackd_packets = 0;
     last_ack_no = -1;
     int state = SLOW_START;
@@ -277,6 +327,11 @@ void udp_transfer(int total_packets, int socket_fd, struct sockaddr_in client_ad
         default:
             packet p = create_packet(0, 0, "end");
             send_pack(socket_fd, &p, client_addr);
+            char string[10];
+            sprintf(string,"%d\n",cwnd);
+            fputs(string,cwnd_file);
+            fflush(cwnd_file);
+            fclose(cwnd_file);
             return;
         }
     }
@@ -350,6 +405,18 @@ void send_file(char *file_name, int socket_fd, struct sockaddr_in client_addr)
 
 int main(int argc, char const *argv[])
 {
+    // FILE *cwndx = fopen("cwndx.txt","w");
+    // if(cwndx == NULL){
+    //     perror("ERROR cannot open file");
+    // }
+    // char s[10] ;
+    // memset(s,0,10);
+    // sprintf(s,"%d",5);
+    // if(fputs(s,cwndx) == EOF){
+    //     perror("ERROR writing to file");
+    // }
+    // fflush(cwndx);
+    cwnd_file = fopen("cwnd.txt","w");
     // if(argc<2){
     //     perror("invalid args");
     //     exit(EXIT_FAILURE);
