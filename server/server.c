@@ -26,7 +26,8 @@ int cwnd = 1;
 int ssthresh = 8;
 int last_ack_no;
 int last_sent_seq;
-
+float plp = 0.1;
+int seed = 1;
 typedef struct
 {
     uint16_t checksum;//TODO: checksum implementation
@@ -62,9 +63,20 @@ ack_packet create_ack_packet(int seq_no, int len)
     return p;
 }
 
+bool is_lost(){
+    float random = (float)rand()/(float)RAND_MAX;
+    if(random < plp) return true;
+    else return false;
+}
+
 void send_pack(int socket_fd, packet *p, struct sockaddr_in client_addr) //TODO: probability to drop packet
 {
-    sendto(socket_fd, p, PACKET_SIZE, 0, (struct sockaddr *)&client_addr, sizeof(client_addr));
+    if(is_lost()){
+        printf("[+] packet %d is dropped\n",p->seq_no);
+    }
+    else{
+        sendto(socket_fd, p, PACKET_SIZE, 0, (struct sockaddr *)&client_addr, sizeof(client_addr));
+    }
 }
 
 int recv_ack(int socket_fd, ack_packet *ack, struct sockaddr_in client_addr)
@@ -72,7 +84,7 @@ int recv_ack(int socket_fd, ack_packet *ack, struct sockaddr_in client_addr)
     socklen_t addr_len = sizeof(client_addr);
     //TODO: reorganize the implementation to be a timer for each on the fly packet
     struct timeval timeout;
-    timeout.tv_sec = 300; //FIXME: return to 0 after finishing
+    timeout.tv_sec = 0; //FIXME: return to 0 after finishing
     timeout.tv_usec = 100000;//100 ms of wait
     setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout));//if socket doesn't recieve a response in time val determined it returns -1 on recv
     return recvfrom(socket_fd, ack, ACK_SIZE, 0, (struct sockaddr *)&client_addr, &addr_len);
@@ -343,6 +355,7 @@ int main(int argc, char const *argv[])
     //     exit(EXIT_FAILURE);
     // }
     // int server_port = atoi(argv[1]);
+    srand(seed);
 
     // create listening socket
     int listening_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);

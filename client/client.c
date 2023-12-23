@@ -102,7 +102,7 @@ int main(int argc, char const *argv[])
         perror("can't create socket");
         exit(EXIT_FAILURE);
     }
-    printf("[+] client created socket %d",socket_fd);
+    printf("[+] client created socket %d\n",socket_fd);
     //connect to server
     struct sockaddr_in server;
     server.sin_family = AF_INET;
